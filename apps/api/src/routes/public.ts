@@ -23,13 +23,14 @@ publicRouter.get(
   asyncHandler(async (req, res) => {
     const variant = req.params.variant!;
     if (!['raw', 'thumb', 'waveform', 'download'].includes(variant)) throw notFound('媒体不存在');
-    const media = await shareService.assertPublicMedia(req.params.token!, req.params.mediaId!);
+    const key = typeof req.query.key === 'string' ? req.query.key : undefined;
+    const media = await shareService.assertPublicMedia(req.params.token!, req.params.mediaId!, key);
     const target = await mediaFileTarget(media, variant as 'raw' | 'thumb' | 'waveform' | 'download');
     sendStoredFile(req, res, {
       key: target.key,
       size: target.size,
       mimeType: target.mimeType,
-      filename: media.originalName,
+      filename: variant === 'waveform' ? `${media.id}.waveform.json` : media.originalName,
       download: variant === 'download',
     });
   }),

@@ -1,10 +1,12 @@
 import type { Prisma } from '@prisma/client';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { prisma } from '../db';
+import { config } from '../config';
 import { notFound, unauthenticated } from '../http/errors';
 import { randomToken, sha256Hex } from '../utils/crypto';
 import { hashPassword, verifyPassword } from './authService';
 import * as audit from './auditService';
-import { toItemDto, toShareLinkDto } from '../serializers';
+import { toItemDto, toShareLinkDto, type MediaUrlBuilder } from '../serializers';
 import { itemWithAccess, type FamilyContext } from './permissionService';
 
 export interface ActorMeta {
@@ -104,6 +106,30 @@ async function loadLink(token: string) {
   return link;
 }
 
+/**
+ * 访客拉取媒体的通行凭证：用服务端密钥对「链接 id + 密码散列」做 HMAC。
+ * 只有通过密码校验（或链接本无密码）的访客才能从 viewShareLink 拿到它；
+ * 链接被撤销/过期后 loadLink 直接 404，凭证随之失效。
+ */
+export function mediaAccessKey(link: { id: string; passwordHash: string | null }): string {
+  return createHmac('sha256', config.JWT_SECRET)
+    .update(`share-media:${link.id}:${link.passwordHash ?? ''}`)
+    .digest('base64url');
+}
+
+export function isValidMediaKey(link: { id: string; passwordHash: string | null }, key: string | undefined): boolean {
+  if (!key) return false;
+  const expected = Buffer.from(mediaAccessKey(link), 'utf8');
+  const actual = Buffer.from(key, 'utf8');
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+/** 分享页里的媒体地址：免登录，凭 mediaAccessKey 访问，覆盖 raw/thumb/waveform/download 全部变体。 */
+function shareMediaUrlBuilder(token: string, key: string): MediaUrlBuilder {
+  return (mediaId, kind) =>
+    `/api/v1/public/share/${token}/media/${mediaId}/${kind}?key=${encodeURIComponent(key)}`;
+}
+
 export async function viewShareLink(token: string, password?: string): Promise<PublicShareView> {
   const link = await loadLink(token);
 
@@ -135,15 +161,20 @@ export async function viewShareLink(token: string, password?: string): Promise<P
     label: link.label,
     expiresAt: link.expiresAt.toISOString(),
     requiresPassword: false,
-    items: rows.map((r) => toItemDto(r, link.familyId)),
+    items: rows.map((r) => toItemDto(r, link.familyId, { mediaUrl: shareMediaUrlBuilder(token, mediaAccessKey(link)) })),
   };
 }
 
-/** 访客读媒体：必须证明该媒体属于本链接覆盖的条目。 */
-export async function assertPublicMedia(token: string, mediaId: string) {
+/** 访客读媒体：先校验通行凭证（即密码校验的结果），再确认该媒体属于本链接覆盖的条目。 */
+export async function assertPublicMedia(token: string, mediaId: string, key?: string) {
   const link = await loadLink(token);
+  if (!isValidMediaKey(link, key)) throw unauthenticated('请先在分享页通过密码校验');
   const media = await prisma.itemMedia.findFirst({
-    where: { id: mediaId, deletedAt: null, item: { shareLinks: { some: { shareLinkId: link.id } } } },
+    where: {
+      id: mediaId,
+      deletedAt: null,
+      item: { deletedAt: null, status: { not: 'trashed' }, shareLinks: { some: { shareLinkId: link.id } } },
+    },
   });
   if (!media) throw notFound('媒体不存在');
   return media;

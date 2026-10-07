@@ -70,11 +70,10 @@ mediaRouter.get(
     const ctx = familyCtx(req);
     const media = await mediaService.loadMediaForUser(user.id, ctx, req.params.mediaId!);
     const target = await mediaService.mediaFileTarget(media, 'waveform');
-    res.setHeader('Content-Type', 'application/json');
     sendStoredFile(req, res, {
       key: target.key,
       size: target.size,
-      mimeType: 'application/json',
+      mimeType: target.mimeType,
       filename: `${media.id}.waveform.json`,
     });
   }),

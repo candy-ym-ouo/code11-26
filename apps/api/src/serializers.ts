@@ -10,11 +10,17 @@ import type {
 } from '@prisma/client';
 import { formatAcquired, isTimeUncertain } from '@heirloom/shared';
 
-export function mediaUrl(familyId: string, mediaId: string, kind: 'raw' | 'thumb' | 'waveform' | 'download'): string {
+export type MediaUrlKind = 'raw' | 'thumb' | 'waveform' | 'download';
+
+/** 默认指向登录后可用的家庭媒体接口；公开分享页会替换成免登录的访客地址。 */
+export function mediaUrl(familyId: string, mediaId: string, kind: MediaUrlKind): string {
   return `/api/v1/families/${familyId}/media/${mediaId}/${kind}`;
 }
 
-export function toMediaDto(m: ItemMedia, familyId: string) {
+export type MediaUrlBuilder = (mediaId: string, kind: MediaUrlKind) => string;
+
+export function toMediaDto(m: ItemMedia, familyId: string, buildUrl?: MediaUrlBuilder) {
+  const url = buildUrl ?? ((id: string, kind: MediaUrlKind) => mediaUrl(familyId, id, kind));
   return {
     id: m.id,
     kind: m.kind,
@@ -31,9 +37,9 @@ export function toMediaDto(m: ItemMedia, familyId: string) {
     hasThumb: Boolean(m.thumbKey),
     hasWaveform: Boolean(m.waveformKey),
     // 播放统一走转码产物（Safari 对 webm/opus 支持不一），没有转码时回落到原始文件
-    rawUrl: mediaUrl(familyId, m.id, m.transcodeKey ? 'download' : 'raw'),
-    thumbUrl: m.thumbKey ? mediaUrl(familyId, m.id, 'thumb') : null,
-    waveformUrl: m.waveformKey ? mediaUrl(familyId, m.id, 'waveform') : null,
+    rawUrl: url(m.id, m.transcodeKey ? 'download' : 'raw'),
+    thumbUrl: m.thumbKey ? url(m.id, 'thumb') : null,
+    waveformUrl: m.waveformKey ? url(m.id, 'waveform') : null,
     lastError: m.lastError,
     createdAt: m.createdAt.toISOString(),
   };
@@ -46,6 +52,7 @@ export function toItemDto(
     _count?: { notes: number; media: number };
   },
   familyId: string,
+  opts: { mediaUrl?: MediaUrlBuilder } = {},
 ) {
   const media = (item.media ?? []).filter((m) => !m.deletedAt);
   const cover =
@@ -92,7 +99,7 @@ export function toItemDto(
     coverMediaId: item.coverMediaId,
     mediaCount: item._count?.media ?? media.length,
     noteCount: item._count?.notes ?? 0,
-    media: media.map((m) => toMediaDto(m, familyId)),
+    media: media.map((m) => toMediaDto(m, familyId, opts.mediaUrl)),
     people: (item.people ?? []).map((ip) => ({
       personId: ip.personId,
       role: ip.role,

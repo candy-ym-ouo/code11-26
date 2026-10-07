@@ -140,7 +140,7 @@ export function ShareViewPage() {
                   .filter((m) => m.kind === 'audio')
                   .map((m) => (
                     <div key={m.id} style={{ marginTop: 'var(--space-3)' }}>
-                      <AudioPlayer media={{ ...m, rawUrl: `/api/v1/public/share/${token}/media/${m.id}/download` }} />
+                      <AudioPlayer media={m} />
                     </div>
                   ))}
               </article>

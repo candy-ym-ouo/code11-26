@@ -216,7 +216,15 @@ export async function mediaFileTarget(media: ItemMedia, variant: 'raw' | 'thumb'
   if (!key) throw notFound('该文件还没有可用产物');
   const stat = await statObject(key);
   if (!stat) throw notFound('文件已不存在');
-  return { key, size: stat.size, mimeType: variant === 'thumb' && media.thumbKey ? 'image/webp' : variant === 'download' && media.transcodeKey ? 'audio/mpeg' : media.mimeType };
+  const mimeType =
+    variant === 'waveform'
+      ? 'application/json'
+      : variant === 'thumb' && media.thumbKey
+        ? 'image/webp'
+        : variant === 'download' && media.transcodeKey
+          ? 'audio/mpeg'
+          : media.mimeType;
+  return { key, size: stat.size, mimeType };
 }
 
 export { enqueue };
