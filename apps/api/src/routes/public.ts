@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { asyncHandler } from '../http/asyncHandler';
-import { publicLimiter } from '../middleware/rateLimit';
+import { publicLimiter, publicMediaLimiter } from '../middleware/rateLimit';
 import * as shareService from '../services/shareService';
 import { mediaFileTarget } from '../services/mediaService';
 import { sendStoredFile } from '../http/sendFile';
@@ -19,12 +19,25 @@ publicRouter.post(
 
 publicRouter.get(
   '/share/:token/media/:mediaId/:variant',
-  publicLimiter,
+  publicMediaLimiter,
   asyncHandler(async (req, res) => {
     const variant = req.params.variant!;
     if (!['raw', 'thumb', 'waveform', 'download'].includes(variant)) throw notFound('媒体不存在');
-    const media = await shareService.assertPublicMedia(req.params.token!, req.params.mediaId!);
+    // 带密码的链接：?st= 是密码校验通过后签发的短期凭证（<img>/<audio> 无法弹密码框）
+    const access = typeof req.query.st === 'string' ? req.query.st : undefined;
+    const media = await shareService.assertPublicMedia(req.params.token!, req.params.mediaId!, access);
     const target = await mediaFileTarget(media, variant as 'raw' | 'thumb' | 'waveform' | 'download');
+    if (variant === 'waveform') {
+      // 与鉴权路由保持一致：波形是 JSON 产物，不是音频本身
+      res.setHeader('Content-Type', 'application/json');
+      sendStoredFile(req, res, {
+        key: target.key,
+        size: target.size,
+        mimeType: 'application/json',
+        filename: `${media.id}.waveform.json`,
+      });
+      return;
+    }
     sendStoredFile(req, res, {
       key: target.key,
       size: target.size,

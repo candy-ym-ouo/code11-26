@@ -32,3 +32,15 @@ export const publicLimiter = rateLimit({
   handler,
 });
 
+/**
+ * 分享页媒体文件：访问本身由签名凭证把关，这里只防抓取滥用。
+ * 额度要容得下一整个相册页（缩略图 + 大图 + 音频流）一次性加载。
+ */
+export const publicMediaLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler,
+});
+

@@ -10,11 +10,28 @@ import type {
 } from '@prisma/client';
 import { formatAcquired, isTimeUncertain } from '@heirloom/shared';
 
-export function mediaUrl(familyId: string, mediaId: string, kind: 'raw' | 'thumb' | 'waveform' | 'download'): string {
+export type MediaVariant = 'raw' | 'thumb' | 'waveform' | 'download';
+/** 按场景生成媒体地址（家庭内走鉴权路由，只读分享页走公开路由） */
+export type MediaUrlFor = (mediaId: string, kind: MediaVariant) => string;
+
+export function mediaUrl(familyId: string, mediaId: string, kind: MediaVariant): string {
   return `/api/v1/families/${familyId}/media/${mediaId}/${kind}`;
 }
 
-export function toMediaDto(m: ItemMedia, familyId: string) {
+/**
+ * 只读分享页的媒体地址：走 /public 公开路由，匿名访客的 <img>/<audio> 才能加载。
+ * 带密码的链接由调用方附上访问凭证（?st=），证明访客已通过密码校验。
+ */
+export function shareMediaUrl(shareToken: string, mediaId: string, kind: MediaVariant, access?: string | null): string {
+  const base = `/api/v1/public/share/${shareToken}/media/${mediaId}/${kind}`;
+  return access ? `${base}?st=${encodeURIComponent(access)}` : base;
+}
+
+export function toMediaDto(
+  m: ItemMedia,
+  familyId: string,
+  urlFor: MediaUrlFor = (id, kind) => mediaUrl(familyId, id, kind),
+) {
   return {
     id: m.id,
     kind: m.kind,
@@ -31,9 +48,9 @@ export function toMediaDto(m: ItemMedia, familyId: string) {
     hasThumb: Boolean(m.thumbKey),
     hasWaveform: Boolean(m.waveformKey),
     // 播放统一走转码产物（Safari 对 webm/opus 支持不一），没有转码时回落到原始文件
-    rawUrl: mediaUrl(familyId, m.id, m.transcodeKey ? 'download' : 'raw'),
-    thumbUrl: m.thumbKey ? mediaUrl(familyId, m.id, 'thumb') : null,
-    waveformUrl: m.waveformKey ? mediaUrl(familyId, m.id, 'waveform') : null,
+    rawUrl: urlFor(m.id, m.transcodeKey ? 'download' : 'raw'),
+    thumbUrl: m.thumbKey ? urlFor(m.id, 'thumb') : null,
+    waveformUrl: m.waveformKey ? urlFor(m.id, 'waveform') : null,
     lastError: m.lastError,
     createdAt: m.createdAt.toISOString(),
   };
@@ -46,6 +63,7 @@ export function toItemDto(
     _count?: { notes: number; media: number };
   },
   familyId: string,
+  urlFor?: MediaUrlFor,
 ) {
   const media = (item.media ?? []).filter((m) => !m.deletedAt);
   const cover =
@@ -92,7 +110,7 @@ export function toItemDto(
     coverMediaId: item.coverMediaId,
     mediaCount: item._count?.media ?? media.length,
     noteCount: item._count?.notes ?? 0,
-    media: media.map((m) => toMediaDto(m, familyId)),
+    media: media.map((m) => toMediaDto(m, familyId, urlFor)),
     people: (item.people ?? []).map((ip) => ({
       personId: ip.personId,
       role: ip.role,

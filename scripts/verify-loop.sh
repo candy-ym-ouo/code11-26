@@ -171,6 +171,13 @@ for _ in $(seq 1 40); do
   [ "$STATUS" = "ready" ] && break
 done
 if [ "$STATUS" = "ready" ]; then ok "图片处理完成（生成缩略图 + 大图）"; else bad "图片处理未完成，状态：$STATUS"; fi
+for _ in $(seq 1 40); do
+  sleep 1
+  code=$(req GET "$V1/families/$FID/items/$IID" "$JAR_A" "" "$TOKEN_A")
+  AST_STATUS=$(json 'd.item.media.find(m=>m.id==="'"$MID_AUD"'")?.status' < "$WORK/body")
+  [ "$AST_STATUS" = "ready" ] && break
+done
+if [ "$AST_STATUS" = "ready" ]; then ok "音频处理完成（转码 + 波形，无 ffmpeg 时保留原始文件）"; else bad "音频处理未完成，状态：$AST_STATUS"; fi
 HAS_THUMB=$(json 'String(!!d.item.media.find(m=>m.id==="'"$MID_IMG"'")?.thumbUrl)' < "$WORK/body")
 if [ "$HAS_THUMB" = "true" ]; then ok "缩略图可直接访问"; else bad "缺少缩略图"; fi
 
@@ -243,8 +250,9 @@ PERSON_HITS=$(json 'd.items.length' < "$WORK/body")
 if [ "$PERSON_HITS" = "1" ]; then ok "按来源人物反查命中 1 条"; else bad "来源人物反查异常：$PERSON_HITS"; fi
 
 code=$(req GET "$V1/families/$FID/timeline" "$JAR_A" "" "$TOKEN_A"); expect "$code" 200 "时间轴分组"
-GROUPS=$(json 'd.groups.length' < "$WORK/body")
-if [ "$GROUPS" -ge 1 ]; then ok "时间轴返回 $GROUPS 个时段分组"; else bad "时间轴无分组"; fi
+# 注意：GROUPS 是 bash 特殊变量（用户组列表），赋值无效且在 set -e 下会让脚本静默退出
+TL_GROUPS=$(json 'd.groups.length' < "$WORK/body")
+if [ "$TL_GROUPS" -ge 1 ]; then ok "时间轴返回 $TL_GROUPS 个时段分组"; else bad "时间轴无分组"; fi
 
 code=$(req GET "$V1/families/$FID/stats" "$JAR_A" "" "$TOKEN_A"); expect "$code" 200 "家庭统计"
 
@@ -263,6 +271,48 @@ code=$(curl -sS -o "$WORK/body" -w '%{http_code}' -X POST -H 'Content-Type: appl
 expect "$code" 200 "密码正确后可见"
 SHARED_ITEMS=$(json 'd.share.items.length' < "$WORK/body")
 if [ "$SHARED_ITEMS" = "1" ]; then ok "访客只看到被分享的 1 条"; else bad "访客看到 $SHARED_ITEMS 条（应为 1）"; fi
+
+# 分享页的媒体地址必须走公开路由：家庭内地址要求登录，匿名访客会全部 401
+IMG_THUMB=$(json 'd.share.items[0].media.find(m=>m.kind==="image")?.thumbUrl' < "$WORK/body")
+case "$IMG_THUMB" in
+  /api/v1/public/share/*) ok "图片缩略图地址走公开只读路由" ;;
+  *) bad "图片缩略图地址未走公开路由：$IMG_THUMB" ;;
+esac
+IMG_RAW=$(json 'd.share.items[0].media.find(m=>m.kind==="image")?.rawUrl' < "$WORK/body")
+AUD_RAW=$(json 'd.share.items[0].media.find(m=>m.kind==="audio")?.rawUrl' < "$WORK/body")
+AUD_WAVE=$(json 'd.share.items[0].media.find(m=>m.kind==="audio")?.waveformUrl' < "$WORK/body")
+case "$IMG_RAW" in
+  /api/v1/public/share/*) ok "大图地址走公开只读路由" ;;
+  *) bad "大图地址未走公开路由：$IMG_RAW" ;;
+esac
+case "$AUD_RAW" in
+  /api/v1/public/share/*) ok "音频地址走公开只读路由" ;;
+  *) bad "音频地址未走公开路由：$AUD_RAW" ;;
+esac
+
+# 带密码的链接：媒体地址自带密码校验凭证（?st=），匿名访客可直接加载全部变体
+code=$(curl -sS -o /dev/null -w '%{http_code}' "$API$IMG_THUMB")
+expect "$code" 200 "匿名访客加载缩略图"
+code=$(curl -sS -o /dev/null -w '%{http_code}' "$API$IMG_RAW")
+expect "$code" 200 "匿名访客查看原图（大图）"
+code=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Range: bytes=0-99' "$API$AUD_RAW")
+expect "$code" 206 "匿名访客流式播放音频（Range）"
+if [ -n "$AUD_WAVE" ] && [ "$AUD_WAVE" != "null" ]; then
+  case "$AUD_WAVE" in
+    /api/v1/public/share/*) ok "波形地址走公开只读路由" ;;
+    *) bad "波形地址未走公开路由：$AUD_WAVE" ;;
+  esac
+  code=$(curl -sS -o /dev/null -w '%{http_code}' "$API$AUD_WAVE")
+  expect "$code" 200 "匿名访客加载音频波形"
+else
+  ok "本机无 ffmpeg，音频无波形产物（跳过波形断言）"
+fi
+
+# 密码校验凭证是访问前提：去掉 ?st= 或伪造一个都必须被拒
+code=$(curl -sS -o /dev/null -w '%{http_code}' "$API${IMG_THUMB%%\?*}")
+expect "$code" 401 "缺少密码校验凭证时媒体被拒绝"
+code=$(curl -sS -o /dev/null -w '%{http_code}' "$API${IMG_THUMB%%\?*}?st=forged-token")
+expect "$code" 401 "伪造密码校验凭证被拒绝"
 
 code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data '{"password":"bad"}' "$V1/public/share/$SHARE_TOKEN")
 expect "$code" 401 "密码错误被拒绝"

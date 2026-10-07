@@ -1,10 +1,12 @@
 import type { Prisma } from '@prisma/client';
+import jwt from 'jsonwebtoken';
+import { config } from '../config';
 import { prisma } from '../db';
 import { notFound, unauthenticated } from '../http/errors';
 import { randomToken, sha256Hex } from '../utils/crypto';
 import { hashPassword, verifyPassword } from './authService';
 import * as audit from './auditService';
-import { toItemDto, toShareLinkDto } from '../serializers';
+import { shareMediaUrl, toItemDto, toShareLinkDto, type MediaVariant } from '../serializers';
 import { itemWithAccess, type FamilyContext } from './permissionService';
 
 export interface ActorMeta {
@@ -104,6 +106,31 @@ async function loadLink(token: string) {
   return link;
 }
 
+/**
+ * 带密码的分享链接：<img>/<audio> 没法弹密码框，密码校验通过后签发一份短期凭证，
+ * 作为媒体地址的 ?st= 参数。它只授予「读取本链接媒体」的能力，
+ * 有效期不超过链接本身的过期时间，撤销/过期后自然失效。
+ */
+const SHARE_MEDIA_SCOPE = 'share-media';
+
+export function signShareMediaToken(link: { id: string; expiresAt: Date }): string {
+  const ttlSec = Math.max(60, Math.floor((link.expiresAt.getTime() - Date.now()) / 1000));
+  return jwt.sign({ scope: SHARE_MEDIA_SCOPE }, config.JWT_SECRET, {
+    subject: link.id,
+    expiresIn: ttlSec,
+  });
+}
+
+export function verifyShareMediaToken(token: string, linkId: string): boolean {
+  try {
+    const decoded = jwt.verify(token, config.JWT_SECRET);
+    if (typeof decoded === 'string') return false;
+    return decoded.sub === linkId && (decoded as jwt.JwtPayload).scope === SHARE_MEDIA_SCOPE;
+  } catch {
+    return false;
+  }
+}
+
 export async function viewShareLink(token: string, password?: string): Promise<PublicShareView> {
   const link = await loadLink(token);
 
@@ -130,18 +157,26 @@ export async function viewShareLink(token: string, password?: string): Promise<P
     data: { accessCount: { increment: 1 }, lastAccessAt: new Date() },
   });
 
+  // 媒体地址必须走公开路由：家庭内的 /families/:fid/media 地址要求登录，
+  // 匿名访客的图片/音频会全部 401。带密码的链接在地址里附上密码校验凭证。
+  const mediaAccess = link.passwordHash ? signShareMediaToken(link) : null;
+  const urlFor = (mediaId: string, kind: MediaVariant) => shareMediaUrl(token, mediaId, kind, mediaAccess);
+
   return {
     familyName: link.family.name,
     label: link.label,
     expiresAt: link.expiresAt.toISOString(),
     requiresPassword: false,
-    items: rows.map((r) => toItemDto(r, link.familyId)),
+    items: rows.map((r) => toItemDto(r, link.familyId, urlFor)),
   };
 }
 
-/** 访客读媒体：必须证明该媒体属于本链接覆盖的条目。 */
-export async function assertPublicMedia(token: string, mediaId: string) {
+/** 访客读媒体：必须证明该媒体属于本链接覆盖的条目；带密码的链接还要出示密码校验凭证。 */
+export async function assertPublicMedia(token: string, mediaId: string, access?: string) {
   const link = await loadLink(token);
+  if (link.passwordHash && (!access || !verifyShareMediaToken(access, link.id))) {
+    throw unauthenticated('请先在分享页通过密码校验');
+  }
   const media = await prisma.itemMedia.findFirst({
     where: { id: mediaId, deletedAt: null, item: { shareLinks: { some: { shareLinkId: link.id } } } },
   });
